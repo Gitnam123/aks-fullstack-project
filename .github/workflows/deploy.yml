@@ -146,9 +146,9 @@ jobs:
         run: |
           terraform init -reconfigure
 
-      # --------------------------------------------------------
-      # Main Terraform
-      # --------------------------------------------------------
+# --------------------------------------------------------
+# Main Terraform
+# --------------------------------------------------------
 
       - name: Initialize Main Terraform
         working-directory: terraform
@@ -170,6 +170,7 @@ jobs:
         env:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
         run: |
+          terraform init -reconfigure
           terraform plan -out=tfplan
 
       - name: Terraform Apply
@@ -177,6 +178,7 @@ jobs:
         env:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
         run: |
+          terraform init -reconfigure
           terraform apply -auto-approve tfplan
 
       - name: Terraform Outputs
