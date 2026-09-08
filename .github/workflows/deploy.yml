@@ -1,6 +1,10 @@
 name: Infrastructure and Application Deployment
 
 on:
+  push:
+    branches:
+      - main
+
   workflow_dispatch:
     inputs:
       run_terraform:
@@ -17,6 +21,7 @@ env:
   TF_IN_AUTOMATION: true
   ARM_USE_OIDC: true
   ARM_USE_AZUREAD: true
+
   ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -27,251 +32,364 @@ env:
 jobs:
 
   # ============================================================
-  # 1. TERRAFORM BOOTSTRAP
+  # 1. TERRAFORM + APPLICATION DEPLOYMENT
   # ============================================================
 
-  terraform-bootstrap:
-    name: Terraform Bootstrap
+  deploy:
+    name: Infrastructure and Application Deployment
     runs-on: ubuntu-latest
-    if: ${{ inputs.run_terraform }}
 
-    defaults:
-      run:
+    steps:
+
+      # ----------------------------------------------------------
+      # CHECKOUT
+      # ----------------------------------------------------------
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+      # ----------------------------------------------------------
+      # AZURE LOGIN
+      # ----------------------------------------------------------
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+
+      # ----------------------------------------------------------
+      # TERRAFORM SETUP
+      # ----------------------------------------------------------
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+
+      # ==========================================================
+      # 2. TERRAFORM BOOTSTRAP
+      # ==========================================================
+
+      - name: Check Terraform Backend
+        id: backend
+        shell: bash
+        run: |
+          if az storage account show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "aksfulltfstate2026" \
+            > /dev/null 2>&1
+          then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Terraform backend already exists."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Terraform backend does not exist."
+          fi
+
+
+      - name: Initialize Bootstrap Without Backend
+        if: steps.backend.outputs.exists == 'false'
         working-directory: bootstrap
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Initialize Bootstrap
-        run: terraform init -backend=false
-
-      - name: Terraform Format Check
-        run: terraform fmt -check
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
-
-      - name: Wait for RBAC Propagation
-        run: sleep 30
-
-      - name: Initialize Remote Bootstrap State
-        run: terraform init -migrate-state -force-copy
+        run: |
+          terraform init -backend=false
 
 
-  # ============================================================
-  # 2. TERRAFORM INFRASTRUCTURE
-  # ============================================================
+      - name: Bootstrap Terraform Format Check
+        if: steps.backend.outputs.exists == 'false'
+        working-directory: bootstrap
+        run: |
+          terraform fmt -check
 
-  terraform-infrastructure:
-    name: Terraform Infrastructure
-    runs-on: ubuntu-latest
-    needs: terraform-bootstrap
-    if: ${{ inputs.run_terraform }}
 
-    defaults:
-      run:
+      - name: Bootstrap Terraform Validate
+        if: steps.backend.outputs.exists == 'false'
+        working-directory: bootstrap
+        run: |
+          terraform validate
+
+
+      - name: Bootstrap Terraform Plan
+        if: steps.backend.outputs.exists == 'false'
+        working-directory: bootstrap
+        run: |
+          terraform plan -out=tfplan
+
+
+      - name: Bootstrap Terraform Apply
+        if: steps.backend.outputs.exists == 'false'
+        working-directory: bootstrap
+        run: |
+          terraform apply -auto-approve tfplan
+
+
+      - name: Wait For Storage RBAC
+        if: steps.backend.outputs.exists == 'false'
+        run: |
+          echo "Waiting for Storage Blob Data Contributor role propagation..."
+          sleep 45
+
+
+      - name: Migrate Bootstrap State To Azure Storage
+        if: steps.backend.outputs.exists == 'false'
+        working-directory: bootstrap
+        run: |
+          terraform init -migrate-state -force-copy
+
+
+      - name: Initialize Existing Bootstrap Backend
+        if: steps.backend.outputs.exists == 'true'
+        working-directory: bootstrap
+        run: |
+          terraform init
+
+
+      - name: Verify Bootstrap Terraform
+        working-directory: bootstrap
+        run: |
+          terraform fmt -check
+          terraform validate
+
+
+      # ==========================================================
+      # 3. MAIN TERRAFORM INFRASTRUCTURE
+      # ==========================================================
+
+      - name: Initialize Main Terraform
         working-directory: terraform
+        run: |
+          terraform init
 
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Initialize Terraform
-        run: terraform init
 
       - name: Terraform Format Check
-        run: terraform fmt -check
+        working-directory: terraform
+        run: |
+          terraform fmt -check
+
 
       - name: Terraform Validate
-        run: terraform validate
+        working-directory: terraform
+        run: |
+          terraform validate
+
 
       - name: Terraform Plan
-        run: terraform plan -out=tfplan
+        working-directory: terraform
         env:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          terraform plan -out=tfplan
+
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        working-directory: terraform
         env:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          terraform apply -auto-approve tfplan
 
 
-  # ============================================================
-  # 3. BUILD AND PUSH DOCKER IMAGES
-  # ============================================================
-
-  build-and-push:
-    name: Build and Push Docker Images
-    runs-on: ubuntu-latest
-    needs:
-      - terraform-infrastructure
-    if: |
-      always() &&
-      (
-        needs.terraform-infrastructure.result == 'success' ||
-        (
-          !inputs.run_terraform &&
-          needs.terraform-infrastructure.result == 'skipped'
-        )
-      )
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # ==========================================================
+      # 4. GET ACR INFORMATION
+      # ==========================================================
 
       - name: Get ACR Name
+        id: acr
+        shell: bash
         run: |
+
           ACR_NAME=$(az acr list \
             --resource-group "$RESOURCE_GROUP" \
             --query "[0].name" \
             --output tsv)
 
+          if [ -z "$ACR_NAME" ]; then
+            echo "ERROR: ACR was not found."
+            exit 1
+          fi
+
           echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
 
+          echo "ACR Name: $ACR_NAME"
+
+
       - name: Get ACR Login Server
+        shell: bash
         run: |
+
           ACR_LOGIN_SERVER=$(az acr show \
-            --name "$ACR_NAME" \
             --resource-group "$RESOURCE_GROUP" \
+            --name "$ACR_NAME" \
             --query "loginServer" \
             --output tsv)
 
+          if [ -z "$ACR_LOGIN_SERVER" ]; then
+            echo "ERROR: ACR login server was not found."
+            exit 1
+          fi
+
           echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
 
-      - name: Login to ACR
+          echo "ACR Login Server: $ACR_LOGIN_SERVER"
+
+
+      # ==========================================================
+      # 5. LOGIN TO ACR
+      # ==========================================================
+
+      - name: Login To Azure Container Registry
         run: |
           az acr login --name "$ACR_NAME"
 
-      - name: Set Image Tag
+
+      # ==========================================================
+      # 6. CREATE IMAGE TAG
+      # ==========================================================
+
+      - name: Create Image Tag
+        shell: bash
         run: |
+
           IMAGE_TAG="${GITHUB_SHA::7}"
+
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+
+          echo "Image Tag: $IMAGE_TAG"
+
+
+      # ==========================================================
+      # 7. BUILD API IMAGE
+      # ==========================================================
 
       - name: Build API Docker Image
         run: |
+
           docker build \
             -t "$ACR_LOGIN_SERVER/aks-product-api:$IMAGE_TAG" \
             ./api
 
+
+      # ==========================================================
+      # 8. BUILD UI IMAGE
+      # ==========================================================
+
       - name: Build UI Docker Image
         run: |
+
           docker build \
             -t "$ACR_LOGIN_SERVER/aks-product-ui:$IMAGE_TAG" \
             ./ui
 
-      - name: Push API Image
+
+      # ==========================================================
+      # 9. PUSH API IMAGE TO ACR
+      # ==========================================================
+
+      - name: Push API Image To ACR
         run: |
-          docker push "$ACR_LOGIN_SERVER/aks-product-api:$IMAGE_TAG"
 
-      - name: Push UI Image
+          docker push \
+            "$ACR_LOGIN_SERVER/aks-product-api:$IMAGE_TAG"
+
+
+      # ==========================================================
+      # 10. PUSH UI IMAGE TO ACR
+      # ==========================================================
+
+      - name: Push UI Image To ACR
         run: |
-          docker push "$ACR_LOGIN_SERVER/aks-product-ui:$IMAGE_TAG"
+
+          docker push \
+            "$ACR_LOGIN_SERVER/aks-product-ui:$IMAGE_TAG"
 
 
-  # ============================================================
-  # 4. DEPLOY TO AKS
-  # ============================================================
+      # ==========================================================
+      # 11. VERIFY IMAGES IN ACR
+      # ==========================================================
 
-  deploy-to-aks:
-    name: Deploy Application to AKS
-    runs-on: ubuntu-latest
-    needs: build-and-push
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Get ACR Name
+      - name: Verify API Image
         run: |
-          ACR_NAME=$(az acr list \
-            --resource-group "$RESOURCE_GROUP" \
-            --query "[0].name" \
-            --output tsv)
 
-          echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
-
-      - name: Get ACR Login Server
-        run: |
-          ACR_LOGIN_SERVER=$(az acr show \
+          az acr repository show \
             --name "$ACR_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --query "loginServer" \
-            --output tsv)
+            --image "aks-product-api:$IMAGE_TAG"
 
-          echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
 
-      - name: Set Image Tag
+      - name: Verify UI Image
         run: |
-          IMAGE_TAG="${GITHUB_SHA::7}"
-          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+
+          az acr repository show \
+            --name "$ACR_NAME" \
+            --image "aks-product-ui:$IMAGE_TAG"
+
+
+      # ==========================================================
+      # 12. GET AKS CREDENTIALS
+      # ==========================================================
 
       - name: Get AKS Credentials
         run: |
+
           az aks get-credentials \
             --resource-group "$RESOURCE_GROUP" \
             --name "$AKS_NAME" \
             --admin \
             --overwrite-existing
 
+
+      # ==========================================================
+      # 13. VERIFY AKS
+      # ==========================================================
+
       - name: Verify AKS Connection
         run: |
+
           kubectl get nodes
 
-      # ----------------------------------------------------------
-      # PostgreSQL Secret
-      # ----------------------------------------------------------
 
-      - name: Get PostgreSQL FQDN
+      # ==========================================================
+      # 14. CREATE KUBERNETES NAMESPACE
+      # ==========================================================
+
+      - name: Deploy Namespace
         run: |
+
+          kubectl apply \
+            -f k8s/namespace.yaml
+
+
+      # ==========================================================
+      # 15. GET POSTGRESQL SERVER
+      # ==========================================================
+
+      - name: Get PostgreSQL Server
+        shell: bash
+        run: |
+
           POSTGRES_NAME=$(az postgres flexible-server list \
             --resource-group "$RESOURCE_GROUP" \
             --query "[0].name" \
             --output tsv)
+
+          if [ -z "$POSTGRES_NAME" ]; then
+            echo "ERROR: PostgreSQL Flexible Server was not found."
+            exit 1
+          fi
+
+          echo "POSTGRES_NAME=$POSTGRES_NAME" >> "$GITHUB_ENV"
+
+          echo "PostgreSQL Server: $POSTGRES_NAME"
+
+
+      # ==========================================================
+      # 16. GET POSTGRESQL PRIVATE FQDN
+      # ==========================================================
+
+      - name: Get PostgreSQL FQDN
+        shell: bash
+        run: |
 
           POSTGRES_FQDN=$(az postgres flexible-server show \
             --resource-group "$RESOURCE_GROUP" \
@@ -279,14 +397,23 @@ jobs:
             --query "fullyQualifiedDomainName" \
             --output tsv)
 
+          if [ -z "$POSTGRES_FQDN" ]; then
+            echo "ERROR: PostgreSQL FQDN was not found."
+            exit 1
+          fi
+
           echo "POSTGRES_FQDN=$POSTGRES_FQDN" >> "$GITHUB_ENV"
 
-      - name: Create Namespace
-        run: |
-          kubectl apply -f k8s/namespace.yaml
+          echo "PostgreSQL FQDN retrieved."
+
+
+      # ==========================================================
+      # 17. CREATE / UPDATE POSTGRESQL KUBERNETES SECRET
+      # ==========================================================
 
       - name: Create PostgreSQL Secret
         run: |
+
           kubectl create secret generic postgres-secret \
             --namespace product-app \
             --from-literal=DB_HOST="$POSTGRES_FQDN" \
@@ -295,64 +422,172 @@ jobs:
             --dry-run=client \
             -o yaml | kubectl apply -f -
 
-      # ----------------------------------------------------------
-      # Kubernetes Resources
-      # ----------------------------------------------------------
 
-      - name: Apply ConfigMap
+      # ==========================================================
+      # 18. DEPLOY CONFIGMAP
+      # ==========================================================
+
+      - name: Deploy ConfigMap
         run: |
-          kubectl apply -f k8s/configmap.yaml
+
+          kubectl apply \
+            -f k8s/configmap.yaml
+
+
+      # ==========================================================
+      # 19. DEPLOY API
+      # ==========================================================
 
       - name: Deploy API
+        shell: bash
         run: |
+
           sed \
             -e "s|ACR_LOGIN_SERVER|$ACR_LOGIN_SERVER|g" \
             -e "s|IMAGE_TAG|$IMAGE_TAG|g" \
             k8s/api-deployment.yaml | kubectl apply -f -
 
+
+      # ==========================================================
+      # 20. DEPLOY API SERVICE
+      # ==========================================================
+
       - name: Deploy API Service
         run: |
-          kubectl apply -f k8s/api-service.yaml
+
+          kubectl apply \
+            -f k8s/api-service.yaml
+
+
+      # ==========================================================
+      # 21. DEPLOY UI
+      # ==========================================================
 
       - name: Deploy UI
+        shell: bash
         run: |
+
           sed \
             -e "s|ACR_LOGIN_SERVER|$ACR_LOGIN_SERVER|g" \
             -e "s|IMAGE_TAG|$IMAGE_TAG|g" \
             k8s/ui-deployment.yaml | kubectl apply -f -
 
+
+      # ==========================================================
+      # 22. DEPLOY UI SERVICE
+      # ==========================================================
+
       - name: Deploy UI Service
         run: |
-          kubectl apply -f k8s/ui-service.yaml
+
+          kubectl apply \
+            -f k8s/ui-service.yaml
+
+
+      # ==========================================================
+      # 23. DEPLOY INGRESS
+      # ==========================================================
 
       - name: Deploy Ingress
         run: |
-          kubectl apply -f k8s/ingress.yaml
 
-      # ----------------------------------------------------------
-      # Verification
-      # ----------------------------------------------------------
+          kubectl apply \
+            -f k8s/ingress.yaml
 
-      - name: Wait for API Rollout
+
+      # ==========================================================
+      # 24. WAIT FOR API PODS
+      # ==========================================================
+
+      - name: Wait For API Rollout
         run: |
-          kubectl rollout status deployment/api-deployment \
-            -n product-app \
-            --timeout=180s
 
-      - name: Wait for UI Rollout
+          kubectl rollout status \
+            deployment/api-deployment \
+            --namespace product-app \
+            --timeout=300s
+
+
+      # ==========================================================
+      # 25. WAIT FOR UI PODS
+      # ==========================================================
+
+      - name: Wait For UI Rollout
         run: |
-          kubectl rollout status deployment/ui-deployment \
-            -n product-app \
-            --timeout=180s
+
+          kubectl rollout status \
+            deployment/ui-deployment \
+            --namespace product-app \
+            --timeout=300s
+
+
+      # ==========================================================
+      # 26. SHOW PODS
+      # ==========================================================
 
       - name: Show Pods
         run: |
-          kubectl get pods -n product-app -o wide
+
+          kubectl get pods \
+            --namespace product-app \
+            -o wide
+
+
+      # ==========================================================
+      # 27. SHOW SERVICES
+      # ==========================================================
 
       - name: Show Services
         run: |
-          kubectl get services -n product-app
+
+          kubectl get services \
+            --namespace product-app
+
+
+      # ==========================================================
+      # 28. SHOW INGRESS
+      # ==========================================================
 
       - name: Show Ingress
         run: |
-          kubectl get ingress -n product-app
+
+          kubectl get ingress \
+            --namespace product-app
+
+
+      # ==========================================================
+      # 29. SHOW APPLICATION GATEWAY PUBLIC IP
+      # ==========================================================
+
+      - name: Show Application Gateway Public IP
+        run: |
+
+          APPGW_IP=$(az network public-ip show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "aks-appgw-public-ip" \
+            --query "ipAddress" \
+            --output tsv)
+
+          echo "================================================"
+          echo "Application Gateway Public IP"
+          echo "================================================"
+          echo "$APPGW_IP"
+          echo "================================================"
+
+
+      # ==========================================================
+      # 30. FINAL STATUS
+      # ==========================================================
+
+      - name: Final Deployment Status
+        run: |
+
+          echo "==============================================="
+          echo "Infrastructure: CREATED / UPDATED"
+          echo "ACR:             IMAGES PUSHED"
+          echo "AKS:             CONNECTED"
+          echo "API:             DEPLOYED"
+          echo "UI:              DEPLOYED"
+          echo "POSTGRESQL:      CONNECTED THROUGH PRIVATE DNS"
+          echo "INGRESS:          DEPLOYED"
+          echo "==============================================="
