@@ -78,9 +78,10 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      # --------------------------------------------------------
-      # Bootstrap Terraform Backend
-      # --------------------------------------------------------
+
+      # ========================================================
+      # BOOTSTRAP TERRAFORM BACKEND
+      # ========================================================
 
       - name: Check Terraform Backend
         id: backend
@@ -98,11 +99,15 @@ jobs:
             echo "Terraform backend does not exist."
           fi
 
+
       - name: Initialize Bootstrap Without Backend
         if: steps.backend.outputs.exists == 'false'
         working-directory: bootstrap
         run: |
-          terraform init -backend=false
+          terraform init \
+            -backend=false \
+            -input=false
+
 
       - name: Bootstrap Terraform Format
         if: steps.backend.outputs.exists == 'false'
@@ -110,23 +115,45 @@ jobs:
         run: |
           terraform fmt -check
 
+
       - name: Bootstrap Terraform Validate
         if: steps.backend.outputs.exists == 'false'
         working-directory: bootstrap
         run: |
           terraform validate
 
+
       - name: Bootstrap Terraform Plan
         if: steps.backend.outputs.exists == 'false'
         working-directory: bootstrap
         run: |
-          terraform plan -out=tfplan
+          echo "==============================================="
+          echo "BOOTSTRAP TERRAFORM PLAN"
+          echo "==============================================="
+
+          terraform plan \
+            -backend=false \
+            -input=false \
+            -out=tfplan
+
+          echo "Bootstrap Terraform plan completed."
+
 
       - name: Bootstrap Terraform Apply
         if: steps.backend.outputs.exists == 'false'
         working-directory: bootstrap
         run: |
-          terraform apply -auto-approve tfplan
+          echo "==============================================="
+          echo "BOOTSTRAP TERRAFORM APPLY"
+          echo "==============================================="
+
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            tfplan
+
+          echo "Bootstrap resources created."
+
 
       - name: Wait For Storage RBAC
         if: steps.backend.outputs.exists == 'false'
@@ -134,56 +161,98 @@ jobs:
           echo "Waiting for Storage Blob Data Contributor role propagation..."
           sleep 45
 
+
       - name: Migrate Bootstrap State To Azure Storage
         if: steps.backend.outputs.exists == 'false'
         working-directory: bootstrap
         run: |
-          terraform init -migrate-state -force-copy
+          echo "Migrating bootstrap Terraform state to Azure Storage..."
+
+          terraform init \
+            -migrate-state \
+            -force-copy \
+            -input=false
+
+          echo "Bootstrap state migration completed."
+
 
       - name: Initialize Existing Bootstrap Backend
         if: steps.backend.outputs.exists == 'true'
         working-directory: bootstrap
         run: |
-          terraform init -reconfigure
+          terraform init \
+            -reconfigure \
+            -input=false
 
-# --------------------------------------------------------
-# Main Terraform
-# --------------------------------------------------------
+
+      # ========================================================
+      # MAIN TERRAFORM
+      # ========================================================
 
       - name: Initialize Main Terraform
         working-directory: terraform
         run: |
-          terraform init -reconfigure
+          echo "==============================================="
+          echo "INITIALIZING MAIN TERRAFORM"
+          echo "==============================================="
+
+          terraform init \
+            -reconfigure \
+            -input=false
+
 
       - name: Terraform Format Check
         working-directory: terraform
         run: |
           terraform fmt -check
 
+
       - name: Terraform Validate
         working-directory: terraform
         run: |
           terraform validate
+
 
       - name: Terraform Plan
         working-directory: terraform
         env:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
         run: |
-          terraform init -reconfigure
-          terraform plan -out=tfplan
+          echo "==============================================="
+          echo "TERRAFORM PLAN"
+          echo "==============================================="
+
+          terraform plan \
+            -input=false \
+            -out=tfplan
+
+          echo "Terraform plan completed."
+
 
       - name: Terraform Apply
         working-directory: terraform
         env:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
         run: |
-          terraform init -reconfigure
-          terraform apply -auto-approve tfplan
+          echo "==============================================="
+          echo "TERRAFORM APPLY"
+          echo "==============================================="
+
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            tfplan
+
+          echo "Terraform infrastructure deployment completed."
+
 
       - name: Terraform Outputs
         working-directory: terraform
         run: |
+          echo "==============================================="
+          echo "TERRAFORM OUTPUTS"
+          echo "==============================================="
+
           terraform output
 
 
@@ -209,6 +278,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+
       - name: Get ACR Name
         shell: bash
         run: |
@@ -223,6 +293,9 @@ jobs:
           fi
 
           echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
+
+          echo "ACR Name: $ACR_NAME"
+
 
       - name: Get ACR Login Server
         shell: bash
@@ -240,6 +313,9 @@ jobs:
 
           echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
 
+          echo "ACR Login Server: $ACR_LOGIN_SERVER"
+
+
       - name: Create Image Tag
         shell: bash
         run: |
@@ -249,20 +325,31 @@ jobs:
 
           echo "Image Tag: $IMAGE_TAG"
 
-      - name: Build API Image
+
+      - name: Build API Docker Image
         run: |
+          echo "Building API Docker image..."
+
           docker build \
             -t "$ACR_LOGIN_SERVER/aks-product-api:$IMAGE_TAG" \
             ./api
 
-      - name: Build UI Image
+
+      - name: Build UI Docker Image
         run: |
+          echo "Building UI Docker image..."
+
           docker build \
             -t "$ACR_LOGIN_SERVER/aks-product-ui:$IMAGE_TAG" \
             ./ui
 
+
       - name: Verify Docker Images
         run: |
+          echo "==============================================="
+          echo "DOCKER IMAGES"
+          echo "==============================================="
+
           docker images
 
 
@@ -288,7 +375,8 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Get ACR Name
+
+      - name: Get ACR Information
         shell: bash
         run: |
           ACR_NAME=$(az acr list \
@@ -296,58 +384,79 @@ jobs:
             --query "[0].name" \
             --output tsv)
 
-          echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
+          if [ -z "$ACR_NAME" ]; then
+            echo "ERROR: ACR was not found."
+            exit 1
+          fi
 
-      - name: Get ACR Login Server
-        shell: bash
-        run: |
           ACR_LOGIN_SERVER=$(az acr show \
             --resource-group "$RESOURCE_GROUP" \
             --name "$ACR_NAME" \
             --query "loginServer" \
             --output tsv)
 
+          echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
           echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
+
+          echo "ACR Name: $ACR_NAME"
+          echo "ACR Login Server: $ACR_LOGIN_SERVER"
+
 
       - name: Create Image Tag
         shell: bash
         run: |
           IMAGE_TAG="${GITHUB_SHA::7}"
+
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+
+          echo "Image Tag: $IMAGE_TAG"
+
 
       - name: Login To ACR
         run: |
           az acr login --name "$ACR_NAME"
 
-      - name: Build API Image
+
+      # --------------------------------------------------------
+      # Because Stage 4 runs on a fresh GitHub runner,
+      # Docker images from Stage 3 are not available here.
+      # Therefore they are rebuilt before pushing.
+      # --------------------------------------------------------
+
+      - name: Build API Image For ACR
         run: |
           docker build \
             -t "$ACR_LOGIN_SERVER/aks-product-api:$IMAGE_TAG" \
             ./api
 
-      - name: Build UI Image
+
+      - name: Build UI Image For ACR
         run: |
           docker build \
             -t "$ACR_LOGIN_SERVER/aks-product-ui:$IMAGE_TAG" \
             ./ui
 
-      - name: Push API Image
+
+      - name: Push API Image To ACR
         run: |
           docker push \
             "$ACR_LOGIN_SERVER/aks-product-api:$IMAGE_TAG"
 
-      - name: Push UI Image
+
+      - name: Push UI Image To ACR
         run: |
           docker push \
             "$ACR_LOGIN_SERVER/aks-product-ui:$IMAGE_TAG"
 
-      - name: Verify API Image
+
+      - name: Verify API Image In ACR
         run: |
           az acr repository show \
             --name "$ACR_NAME" \
             --image "aks-product-api:$IMAGE_TAG"
 
-      - name: Verify UI Image
+
+      - name: Verify UI Image In ACR
         run: |
           az acr repository show \
             --name "$ACR_NAME" \
@@ -376,6 +485,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+
       - name: Get AKS Credentials
         run: |
           az aks get-credentials \
@@ -384,12 +494,22 @@ jobs:
             --admin \
             --overwrite-existing
 
+
       - name: Verify AKS Cluster
         run: |
+          echo "==============================================="
+          echo "AKS CLUSTER"
+          echo "==============================================="
+
           kubectl cluster-info
+
 
       - name: Verify AKS Nodes
         run: |
+          echo "==============================================="
+          echo "AKS NODES"
+          echo "==============================================="
+
           kubectl get nodes -o wide
 
 
@@ -415,6 +535,11 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+
+      # --------------------------------------------------------
+      # AKS Credentials
+      # --------------------------------------------------------
+
       - name: Get AKS Credentials
         run: |
           az aks get-credentials \
@@ -423,8 +548,9 @@ jobs:
             --admin \
             --overwrite-existing
 
+
       # --------------------------------------------------------
-      # Get ACR
+      # ACR Information
       # --------------------------------------------------------
 
       - name: Get ACR Information
@@ -435,6 +561,11 @@ jobs:
             --query "[0].name" \
             --output tsv)
 
+          if [ -z "$ACR_NAME" ]; then
+            echo "ERROR: ACR was not found."
+            exit 1
+          fi
+
           ACR_LOGIN_SERVER=$(az acr show \
             --resource-group "$RESOURCE_GROUP" \
             --name "$ACR_NAME" \
@@ -444,6 +575,7 @@ jobs:
           echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
           echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
 
+
       # --------------------------------------------------------
       # Image Tag
       # --------------------------------------------------------
@@ -452,7 +584,11 @@ jobs:
         shell: bash
         run: |
           IMAGE_TAG="${GITHUB_SHA::7}"
+
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+
+          echo "Deploying image tag: $IMAGE_TAG"
+
 
       # --------------------------------------------------------
       # PostgreSQL
@@ -473,6 +609,9 @@ jobs:
 
           echo "POSTGRES_NAME=$POSTGRES_NAME" >> "$GITHUB_ENV"
 
+          echo "PostgreSQL server found."
+
+
       - name: Get PostgreSQL FQDN
         shell: bash
         run: |
@@ -489,6 +628,9 @@ jobs:
 
           echo "POSTGRES_FQDN=$POSTGRES_FQDN" >> "$GITHUB_ENV"
 
+          echo "PostgreSQL FQDN retrieved."
+
+
       # --------------------------------------------------------
       # Namespace
       # --------------------------------------------------------
@@ -497,6 +639,7 @@ jobs:
         run: |
           kubectl apply \
             -f k8s/namespace.yaml
+
 
       # --------------------------------------------------------
       # PostgreSQL Secret
@@ -512,6 +655,7 @@ jobs:
             --dry-run=client \
             -o yaml | kubectl apply -f -
 
+
       # --------------------------------------------------------
       # ConfigMap
       # --------------------------------------------------------
@@ -521,8 +665,9 @@ jobs:
           kubectl apply \
             -f k8s/configmap.yaml
 
+
       # --------------------------------------------------------
-      # API
+      # API Deployment
       # --------------------------------------------------------
 
       - name: Deploy API
@@ -533,13 +678,15 @@ jobs:
             -e "s|IMAGE_TAG|$IMAGE_TAG|g" \
             k8s/api-deployment.yaml | kubectl apply -f -
 
+
       - name: Deploy API Service
         run: |
           kubectl apply \
             -f k8s/api-service.yaml
 
+
       # --------------------------------------------------------
-      # UI
+      # UI Deployment
       # --------------------------------------------------------
 
       - name: Deploy UI
@@ -550,10 +697,12 @@ jobs:
             -e "s|IMAGE_TAG|$IMAGE_TAG|g" \
             k8s/ui-deployment.yaml | kubectl apply -f -
 
+
       - name: Deploy UI Service
         run: |
           kubectl apply \
             -f k8s/ui-service.yaml
+
 
       # --------------------------------------------------------
       # Ingress
@@ -577,12 +726,20 @@ jobs:
 
     steps:
 
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+
+      # --------------------------------------------------------
+      # AKS Credentials
+      # --------------------------------------------------------
 
       - name: Get AKS Credentials
         run: |
@@ -592,8 +749,9 @@ jobs:
             --admin \
             --overwrite-existing
 
+
       # --------------------------------------------------------
-      # Rollout Verification
+      # API Rollout
       # --------------------------------------------------------
 
       - name: Wait For API Rollout
@@ -603,6 +761,11 @@ jobs:
             --namespace product-app \
             --timeout=300s
 
+
+      # --------------------------------------------------------
+      # UI Rollout
+      # --------------------------------------------------------
+
       - name: Wait For UI Rollout
         run: |
           kubectl rollout status \
@@ -610,15 +773,21 @@ jobs:
             --namespace product-app \
             --timeout=300s
 
+
       # --------------------------------------------------------
       # Pods
       # --------------------------------------------------------
 
       - name: Verify Pods
         run: |
+          echo "==============================================="
+          echo "KUBERNETES PODS"
+          echo "==============================================="
+
           kubectl get pods \
             --namespace product-app \
             -o wide
+
 
       # --------------------------------------------------------
       # Services
@@ -626,8 +795,13 @@ jobs:
 
       - name: Verify Services
         run: |
+          echo "==============================================="
+          echo "KUBERNETES SERVICES"
+          echo "==============================================="
+
           kubectl get services \
             --namespace product-app
+
 
       # --------------------------------------------------------
       # Ingress
@@ -635,8 +809,13 @@ jobs:
 
       - name: Verify Ingress
         run: |
+          echo "==============================================="
+          echo "KUBERNETES INGRESS"
+          echo "==============================================="
+
           kubectl get ingress \
             --namespace product-app
+
 
       # --------------------------------------------------------
       # Application Gateway
@@ -651,14 +830,20 @@ jobs:
             --query "ipAddress" \
             --output tsv)
 
+          if [ -z "$APPGW_IP" ]; then
+            echo "ERROR: Application Gateway public IP was not found."
+            exit 1
+          fi
+
           echo "==============================================="
-          echo "Application Gateway Public IP"
+          echo "APPLICATION GATEWAY PUBLIC IP"
           echo "==============================================="
           echo "$APPGW_IP"
           echo "==============================================="
 
+
       # --------------------------------------------------------
-      # Final Status
+      # Final Deployment Status
       # --------------------------------------------------------
 
       - name: Deployment Summary
@@ -666,6 +851,7 @@ jobs:
           echo "==============================================="
           echo "       AKS FULL STACK DEPLOYMENT"
           echo "==============================================="
+          echo ""
           echo "Azure Authentication : SUCCESS"
           echo "Terraform            : SUCCESS"
           echo "Docker Build         : SUCCESS"
@@ -673,4 +859,7 @@ jobs:
           echo "AKS Connection       : SUCCESS"
           echo "Kubernetes Deploy    : SUCCESS"
           echo "Deployment Verify    : SUCCESS"
+          echo ""
+          echo "==============================================="
+          echo "       DEPLOYMENT COMPLETED"
           echo "==============================================="
