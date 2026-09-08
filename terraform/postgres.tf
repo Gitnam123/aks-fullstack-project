@@ -5,22 +5,19 @@ resource "random_string" "postgres_suffix" {
 }
 
 resource "azurerm_postgresql_flexible_server" "postgres" {
-  name = "${var.postgres_name_prefix}${random_string.postgres_suffix.result}"
-
+  name                = "${var.postgres_name_prefix}${random_string.postgres_suffix.result}"
   resource_group_name = data.azurerm_resource_group.main.name
   location            = data.azurerm_resource_group.main.location
 
-  version = "16"
-
+  version                = "16"
   administrator_login    = var.postgres_admin_username
   administrator_password = var.postgres_admin_password
 
-  sku_name   = "B_Standard_B1ms"
-  storage_mb = 32768
-
+  sku_name              = "B_Standard_B1ms"
+  storage_mb            = 32768
   backup_retention_days = 7
 
-  public_network_access_enabled = true
+  public_network_access_enabled = false
 
   tags = {
     Project = "AKS Fullstack"

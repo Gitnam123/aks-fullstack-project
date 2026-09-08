@@ -1,24 +1,17 @@
 data "azurerm_client_config" "current" {}
 
-resource "azurerm_resource_group" "terraform_state" {
-  name     = "aks-fullstack-rg"
-  location = "centralindia"
-
-  tags = {
-    Project   = "AKS Fullstack"
-    ManagedBy = "Terraform"
-    Purpose   = "Terraform State"
-  }
+data "azurerm_resource_group" "terraform_state" {
+  name = "aks-fullstack-rg"
 }
 
 resource "azurerm_storage_account" "terraform_state" {
-  name                            = "aksfulltfstate2026"
-  resource_group_name             = azurerm_resource_group.terraform_state.name
-  location                        = azurerm_resource_group.terraform_state.location
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
+  name                     = "aksfulltfstate2026"
+  resource_group_name      = data.azurerm_resource_group.terraform_state.name
+  location                 = data.azurerm_resource_group.terraform_state.location
+  account_tier              = "Standard"
+  account_replication_type  = "LRS"
   allow_nested_items_to_be_public = false
-  min_tls_version                 = "TLS1_2"
+  min_tls_version           = "TLS1_2"
 
   tags = {
     Project   = "AKS Fullstack"
