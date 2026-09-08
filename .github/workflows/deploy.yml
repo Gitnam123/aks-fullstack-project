@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-
   workflow_dispatch:
 
 permissions:
@@ -68,8 +67,13 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      # Bootstrap backend already exists.
-      # Initialize it using the Azure backend.
+      - name: Enable Terraform State Storage Access
+        run: |
+          az storage account update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name aksfulltfstate2026 \
+            --public-network-access Enabled
+
       - name: Initialize Bootstrap
         working-directory: bootstrap
         run: |
@@ -77,7 +81,6 @@ jobs:
           terraform fmt -check
           terraform validate
 
-      # Create/update all Azure infrastructure.
       - name: Terraform Infrastructure
         working-directory: terraform
         env:
@@ -89,7 +92,6 @@ jobs:
           terraform plan -out=tfplan
           terraform apply -auto-approve tfplan
 
-      # Give Azure RBAC assignments time to propagate.
       - name: Wait For Azure RBAC
         run: sleep 45
 
