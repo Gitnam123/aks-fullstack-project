@@ -10,8 +10,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   default_node_pool {
     name = "system"
 
-    vm_size = "Standard_D2s_v5"
-
+    vm_size    = "Standard_D2s_v5"
     node_count = 1
 
     vnet_subnet_id = azurerm_subnet.aks.id
@@ -28,19 +27,20 @@ resource "azurerm_kubernetes_cluster" "aks" {
 
   role_based_access_control_enabled = true
 
+  ingress_application_gateway {
+    gateway_id = azurerm_application_gateway.appgw.id
+  }
+
   network_profile {
     network_plugin      = "azure"
     network_plugin_mode = "overlay"
-
-    network_policy = "azure"
+    network_policy      = "azure"
 
     load_balancer_sku = "standard"
 
-    service_cidr = "10.10.0.0/16"
-
+    service_cidr   = "10.10.0.0/16"
     dns_service_ip = "10.10.0.10"
-
-    pod_cidr = "10.244.0.0/16"
+    pod_cidr       = "10.244.0.0/16"
   }
 
   tags = {
@@ -52,6 +52,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
     azurerm_subnet.aks
   ]
 }
+
 resource "azurerm_role_assignment" "aks_acr_pull" {
   principal_id = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
 

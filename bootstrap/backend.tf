@@ -4,6 +4,8 @@ terraform {
     storage_account_name = "aksfulltfstate2026"
     container_name       = "tfstate"
     key                  = "bootstrap.tfstate"
-    use_azuread_auth     = true
+
+    use_oidc         = true
+    use_azuread_auth = true
   }
 }

@@ -30,6 +30,14 @@ resource "azurerm_subnet" "application_gateway" {
   address_prefixes = [
     "10.0.2.0/24"
   ]
+
+  delegation {
+    name = "appgw-delegation"
+
+    service_delegation {
+      name = "Microsoft.Network/applicationGateways"
+    }
+  }
 }
 
 resource "azurerm_subnet" "private_endpoint" {
