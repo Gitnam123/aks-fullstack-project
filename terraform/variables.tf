@@ -1,7 +1,7 @@
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "centralindia"
+  default     = "southindia"
 }
 
 variable "resource_group_name" {
@@ -38,4 +38,9 @@ variable "postgres_admin_password" {
   description = "PostgreSQL administrator password"
   type        = string
   sensitive   = true
+}
+
+variable "github_actions_principal_id" {
+  description = "Object ID of the GitHub Actions service principal"
+  type        = string
 }

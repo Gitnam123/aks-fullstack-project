@@ -11,8 +11,9 @@ permissions:
   contents: read
 
 env:
-  AZURE_LOCATION: centralindia
+  AZURE_LOCATION: southindia
   RESOURCE_GROUP: aks-fullstack-rg
+  TF_STATE_RESOURCE_GROUP: aks-terraform-state-rg
   AKS_NAME: aks-fullstack
   ACR_NAME_PREFIX: aksfullstackacr
   IMAGE_TAG: ${{ github.sha }}
@@ -25,9 +26,6 @@ env:
 
 jobs:
 
-  # =========================================================
-  # STAGE 1 - AZURE AUTHENTICATION
-  # =========================================================
   authenticate:
     name: Stage 1 - Azure Authentication
     runs-on: ubuntu-latest
@@ -46,11 +44,7 @@ jobs:
       - name: Verify Azure Login
         run: |
           az account show
-          az account list --output table
 
-  # =========================================================
-  # STAGE 2 - TERRAFORM INFRASTRUCTURE
-  # =========================================================
   infrastructure:
     name: Stage 2 - Terraform Infrastructure
     runs-on: ubuntu-latest
@@ -67,38 +61,22 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # -----------------------------------------------------
-      # Create Resource Group for Terraform State
-      # -----------------------------------------------------
       - name: Create Terraform State Resource Group
         run: |
-          if az group show \
-            --name "$RESOURCE_GROUP" >/dev/null 2>&1
-          then
-            echo "Resource group already exists."
-          else
-            echo "Creating resource group..."
-
+          if ! az group show --name "$TF_STATE_RESOURCE_GROUP" >/dev/null 2>&1; then
             az group create \
-              --name "$RESOURCE_GROUP" \
+              --name "$TF_STATE_RESOURCE_GROUP" \
               --location "$AZURE_LOCATION"
           fi
 
-      # -----------------------------------------------------
-      # Create Storage Account for Terraform State
-      # -----------------------------------------------------
       - name: Create Terraform State Storage Account
         run: |
-          if az storage account show \
-            --resource-group "$RESOURCE_GROUP" \
-            --name aksfulltfstate2026 >/dev/null 2>&1
-          then
-            echo "Terraform state storage account already exists."
-          else
-            echo "Creating Terraform state storage account..."
+          if ! az storage account show \
+            --resource-group "$TF_STATE_RESOURCE_GROUP" \
+            --name aksfulltfstate2026 >/dev/null 2>&1; then
 
             az storage account create \
-              --resource-group "$RESOURCE_GROUP" \
+              --resource-group "$TF_STATE_RESOURCE_GROUP" \
               --name aksfulltfstate2026 \
               --location "$AZURE_LOCATION" \
               --sku Standard_LRS \
@@ -106,122 +84,81 @@ jobs:
               --allow-blob-public-access false
           fi
 
-      # -----------------------------------------------------
-      # Give GitHub Service Principal access to State Storage
-      # -----------------------------------------------------
-      - name: Grant Terraform State Storage Access
+      - name: Get GitHub Actions Principal ID
+        id: principal
         run: |
           PRINCIPAL_ID=$(az ad sp show \
             --id "$ARM_CLIENT_ID" \
             --query id \
             -o tsv)
 
+          echo "principal_id=$PRINCIPAL_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Grant Terraform State Storage Access
+        run: |
           STORAGE_ID=$(az storage account show \
-            --resource-group "$RESOURCE_GROUP" \
+            --resource-group "$TF_STATE_RESOURCE_GROUP" \
             --name aksfulltfstate2026 \
             --query id \
             -o tsv)
 
           EXISTING_ROLE=$(az role assignment list \
-            --assignee "$PRINCIPAL_ID" \
+            --assignee "${{ steps.principal.outputs.principal_id }}" \
             --scope "$STORAGE_ID" \
             --role "Storage Blob Data Contributor" \
             --query "[0].id" \
             -o tsv)
 
-          if [ -n "$EXISTING_ROLE" ]; then
-            echo "Storage Blob Data Contributor role already exists."
-          else
-            echo "Assigning Storage Blob Data Contributor role..."
-
+          if [ -z "$EXISTING_ROLE" ]; then
             az role assignment create \
-              --assignee-object-id "$PRINCIPAL_ID" \
+              --assignee-object-id "${{ steps.principal.outputs.principal_id }}" \
               --assignee-principal-type ServicePrincipal \
               --role "Storage Blob Data Contributor" \
               --scope "$STORAGE_ID"
 
-            echo "Waiting for Azure RBAC propagation..."
             sleep 30
           fi
 
-      # -----------------------------------------------------
-      # Create Terraform State Container
-      # -----------------------------------------------------
       - name: Create Terraform State Container
         run: |
-          if az storage container show \
+          az storage container create \
             --account-name aksfulltfstate2026 \
             --name tfstate \
-            --auth-mode login >/dev/null 2>&1
-          then
-            echo "Terraform state container already exists."
-          else
-            echo "Creating Terraform state container..."
+            --auth-mode login \
+            2>/dev/null || true
 
-            az storage container create \
-              --account-name aksfulltfstate2026 \
-              --name tfstate \
-              --auth-mode login
-          fi
-
-      # -----------------------------------------------------
-      # Install Terraform
-      # -----------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.3
 
-      - name: Terraform Version
-        run: |
-          terraform version
-
-      # -----------------------------------------------------
-      # Terraform Initialization
-      # -----------------------------------------------------
       - name: Terraform Init
         working-directory: terraform
-        run: |
-          terraform init -reconfigure
+        run: terraform init -reconfigure
 
-      # -----------------------------------------------------
-      # Terraform Format
-      # -----------------------------------------------------
       - name: Terraform Format Check
         working-directory: terraform
-        run: |
-          terraform fmt -check -recursive
+        run: terraform fmt -check -recursive
 
-      # -----------------------------------------------------
-      # Terraform Validate
-      # -----------------------------------------------------
       - name: Terraform Validate
         working-directory: terraform
-        run: |
-          terraform validate
+        run: terraform validate
 
-      # -----------------------------------------------------
-      # Terraform Plan
-      # -----------------------------------------------------
       - name: Terraform Plan
         working-directory: terraform
         run: |
           terraform plan \
-            -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
+            -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}" \
+            -var="github_actions_principal_id=${{ steps.principal.outputs.principal_id }}"
 
-      # -----------------------------------------------------
-      # Terraform Apply
-      # -----------------------------------------------------
       - name: Terraform Apply
         working-directory: terraform
         run: |
           terraform apply \
             -auto-approve \
-            -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
+            -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}" \
+            -var="github_actions_principal_id=${{ steps.principal.outputs.principal_id }}"
 
-  # =========================================================
-  # STAGE 3 - DOCKER BUILD
-  # =========================================================
   docker-build:
     name: Stage 3 - Docker Build
     runs-on: ubuntu-latest
@@ -232,24 +169,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build API Image
-        run: |
-          docker build \
-            -t aks-product-api:${IMAGE_TAG} \
-            ./api
+        run: docker build -t aks-product-api:${IMAGE_TAG} ./api
 
       - name: Build UI Image
-        run: |
-          docker build \
-            -t aks-product-ui:${IMAGE_TAG} \
-            ./ui
+        run: docker build -t aks-product-ui:${IMAGE_TAG} ./ui
 
-      - name: Verify Docker Images
-        run: |
-          docker images
-
-  # =========================================================
-  # STAGE 4 - PUSH TO ACR
-  # =========================================================
   push-acr:
     name: Stage 4 - Push Images to ACR
     runs-on: ubuntu-latest
@@ -275,17 +199,15 @@ jobs:
             -o tsv)
 
           if [ -z "$ACR_NAME" ]; then
-            echo "ERROR: No ACR found in $RESOURCE_GROUP"
+            echo "ERROR: No ACR found"
             exit 1
           fi
 
-          echo "ACR_NAME=$ACR_NAME"
           echo "name=$ACR_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Login to ACR
         run: |
-          az acr login \
-            --name "${{ steps.acr.outputs.name }}"
+          az acr login --name "${{ steps.acr.outputs.name }}"
 
       - name: Build and Push API Image
         run: |
@@ -305,15 +227,6 @@ jobs:
           docker push \
             "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-ui:${IMAGE_TAG}"
 
-      - name: Verify ACR Images
-        run: |
-          az acr repository list \
-            --name "${{ steps.acr.outputs.name }}" \
-            --output table
-
-  # =========================================================
-  # STAGE 5 - AKS CONNECTION
-  # =========================================================
   aks-connect:
     name: Stage 5 - AKS Connection
     runs-on: ubuntu-latest
@@ -343,9 +256,6 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
 
-  # =========================================================
-  # STAGE 6 - KUBERNETES DEPLOYMENT
-  # =========================================================
   deploy:
     name: Stage 6 - Kubernetes Deployment
     runs-on: ubuntu-latest
@@ -378,12 +288,6 @@ jobs:
             --query "[0].name" \
             -o tsv)
 
-          if [ -z "$ACR_NAME" ]; then
-            echo "ERROR: No ACR found in $RESOURCE_GROUP"
-            exit 1
-          fi
-
-          echo "ACR_NAME=$ACR_NAME"
           echo "server=$ACR_NAME.azurecr.io" >> "$GITHUB_OUTPUT"
 
       - name: Get PostgreSQL Host
@@ -394,24 +298,12 @@ jobs:
             --query "[0].name" \
             -o tsv)
 
-          if [ -z "$PG_NAME" ]; then
-            echo "ERROR: No PostgreSQL Flexible Server found in $RESOURCE_GROUP"
-            exit 1
-          fi
-
           PG_HOST=$(az postgres flexible-server show \
             --resource-group "$RESOURCE_GROUP" \
             --name "$PG_NAME" \
             --query "fullyQualifiedDomainName" \
             -o tsv)
 
-          if [ -z "$PG_HOST" ]; then
-            echo "ERROR: PostgreSQL FQDN could not be retrieved"
-            exit 1
-          fi
-
-          echo "PostgreSQL server: $PG_NAME"
-          echo "PostgreSQL host: $PG_HOST"
           echo "host=$PG_HOST" >> "$GITHUB_OUTPUT"
 
       - name: Create Generated Kubernetes Manifests
@@ -468,9 +360,6 @@ jobs:
           kubectl get all -n product-app
           kubectl get ingress -n product-app -o wide
 
-  # =========================================================
-  # STAGE 7 - VERIFY
-  # =========================================================
   verify:
     name: Stage 7 - Verification
     runs-on: ubuntu-latest
@@ -492,7 +381,7 @@ jobs:
             --admin \
             --overwrite-existing
 
-      - name: Verify Deployments
+      - name: Verify Deployment
         run: |
           kubectl rollout status deployment/api-deployment \
             -n product-app \
@@ -502,26 +391,8 @@ jobs:
             -n product-app \
             --timeout=180s
 
-      - name: Verify Pods
-        run: |
-          kubectl get pods -n product-app
-
-      - name: Verify Services
-        run: |
-          kubectl get svc -n product-app
-
-      - name: Verify Ingress
-        run: |
-          kubectl get ingress product-ingress \
-            -n product-app \
-            -o wide
-
       - name: Final Verification
         run: |
-          echo "========================================"
-          echo "AKS FULLSTACK DEPLOYMENT VERIFIED"
-          echo "========================================"
-
           kubectl get deployments -n product-app
           kubectl get pods -n product-app
           kubectl get svc -n product-app

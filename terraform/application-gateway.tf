@@ -1,7 +1,7 @@
 resource "azurerm_public_ip" "appgw" {
   name                = "aks-appgw-public-ip"
-  location            = data.azurerm_resource_group.main.location
-  resource_group_name = data.azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
 
   allocation_method = "Static"
   sku               = "Standard"
@@ -13,13 +13,12 @@ resource "azurerm_public_ip" "appgw" {
 
 resource "azurerm_application_gateway" "appgw" {
   name                = "aks-fullstack-appgw"
-  location            = data.azurerm_resource_group.main.location
-  resource_group_name = data.azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
 
   sku {
-    name = "Standard_v2"
-    tier = "Standard_v2"
-
+    name     = "Standard_v2"
+    tier     = "Standard_v2"
     capacity = 1
   }
 
@@ -47,8 +46,7 @@ resource "azurerm_application_gateway" "appgw" {
     cookie_based_affinity = "Disabled"
     port                  = 80
     protocol              = "Http"
-
-    request_timeout = 30
+    request_timeout       = 30
   }
 
   http_listener {

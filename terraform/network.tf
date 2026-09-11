@@ -1,7 +1,7 @@
 resource "azurerm_virtual_network" "main" {
   name                = "aks-fullstack-vnet"
-  location            = data.azurerm_resource_group.main.location
-  resource_group_name = data.azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
 
   address_space = [
     "10.0.0.0/16"
@@ -14,7 +14,7 @@ resource "azurerm_virtual_network" "main" {
 
 resource "azurerm_subnet" "aks" {
   name                 = "aks-subnet"
-  resource_group_name  = data.azurerm_resource_group.main.name
+  resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
 
   address_prefixes = [
@@ -24,7 +24,7 @@ resource "azurerm_subnet" "aks" {
 
 resource "azurerm_subnet" "application_gateway" {
   name                 = "appgw-subnet"
-  resource_group_name  = data.azurerm_resource_group.main.name
+  resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
 
   address_prefixes = [
@@ -42,7 +42,7 @@ resource "azurerm_subnet" "application_gateway" {
 
 resource "azurerm_subnet" "private_endpoint" {
   name                 = "private-endpoint-subnet"
-  resource_group_name  = data.azurerm_resource_group.main.name
+  resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
 
   address_prefixes = [
