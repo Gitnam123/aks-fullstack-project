@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   AZURE_LOCATION: centralindia
   RESOURCE_GROUP: aks-fullstack-rg
@@ -94,6 +98,41 @@ jobs:
               --sku Standard_LRS \
               --min-tls-version TLS1_2 \
               --allow-blob-public-access false
+          fi
+
+      - name: Grant Terraform State Storage Access
+        run: |
+          PRINCIPAL_ID=$(az ad sp show \
+            --id "$ARM_CLIENT_ID" \
+            --query id \
+            -o tsv)
+
+          STORAGE_ID=$(az storage account show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name aksfulltfstate2026 \
+            --query id \
+            -o tsv)
+
+          EXISTING_ROLE=$(az role assignment list \
+            --assignee "$PRINCIPAL_ID" \
+            --scope "$STORAGE_ID" \
+            --role "Storage Blob Data Contributor" \
+            --query "[0].id" \
+            -o tsv)
+
+          if [ -n "$EXISTING_ROLE" ]; then
+            echo "Storage Blob Data Contributor role already exists."
+          else
+            echo "Assigning Storage Blob Data Contributor role..."
+
+            az role assignment create \
+              --assignee-object-id "$PRINCIPAL_ID" \
+              --assignee-principal-type ServicePrincipal \
+              --role "Storage Blob Data Contributor" \
+              --scope "$STORAGE_ID"
+
+            echo "Waiting for Azure RBAC propagation..."
+            sleep 30
           fi
 
       - name: Create Terraform State Container
@@ -354,11 +393,13 @@ jobs:
           sed \
             -e "s|ACR_LOGIN_SERVER/aks-product-api:IMAGE_TAG|${ACR_SERVER}/aks-product-api:${IMAGE_TAG}|g" \
             -e "s|POSTGRES_HOST_PLACEHOLDER|${POSTGRES_HOST}|g" \
-            k8s/api-deployment.yaml > k8s-generated/api-deployment.yaml
+            k8s/api-deployment.yaml \
+            > k8s-generated/api-deployment.yaml
 
           sed \
             "s|ACR_LOGIN_SERVER/aks-product-ui:IMAGE_TAG|${ACR_SERVER}/aks-product-ui:${IMAGE_TAG}|g" \
-            k8s/ui-deployment.yaml > k8s-generated/ui-deployment.yaml
+            k8s/ui-deployment.yaml \
+            > k8s-generated/ui-deployment.yaml
 
           cat > k8s-generated/secret.yaml <<EOF
           apiVersion: v1
