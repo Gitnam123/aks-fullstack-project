@@ -1,4 +1,4 @@
-name: AKS Fullstack CI/CD
+name: AKS Fullstack Deployment
 
 on:
   push:
@@ -6,14 +6,12 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: read
-
 env:
+  AZURE_LOCATION: centralindia
   RESOURCE_GROUP: aks-fullstack-rg
   AKS_NAME: aks-fullstack
-  TF_VERSION: "1.9.8"
+  ACR_NAME_PREFIX: aksfullstackacr
+  IMAGE_TAG: ${{ github.sha }}
 
   ARM_USE_OIDC: true
   ARM_USE_AZUREAD: true
@@ -24,14 +22,15 @@ env:
 jobs:
 
   # =========================
-  # STAGE 1 - AZURE LOGIN
+  # STAGE 1 - AZURE AUTHENTICATION
   # =========================
-  azure-login:
-    name: Stage 1 - Azure Login
+  authenticate:
+    name: Stage 1 - Azure Authentication
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v2
@@ -40,19 +39,22 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Verify Azure
-        run: az account show
+      - name: Verify Azure Login
+        run: |
+          az account show
+          az account list --output table
 
   # =========================
-  # STAGE 2 - INFRASTRUCTURE
+  # STAGE 2 - TERRAFORM INFRASTRUCTURE
   # =========================
-  terraform:
+  infrastructure:
     name: Stage 2 - Terraform Infrastructure
     runs-on: ubuntu-latest
-    needs: azure-login
+    needs: authenticate
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v2
@@ -61,62 +63,83 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Create Terraform Variables
-        working-directory: terraform
-        env:
-          DB_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+      - name: Create Terraform State Resource Group
         run: |
-          cat > terraform.auto.tfvars <<EOF
-          location = "centralindia"
-          resource_group_name = "aks-fullstack-rg"
-          aks_name = "aks-fullstack"
-          acr_name_prefix = "aksfullstackacr"
-          postgres_name_prefix = "aksfullstackpg"
-          postgres_admin_username = "${{ secrets.POSTGRES_ADMIN_USERNAME }}"
-          postgres_admin_password = "${DB_PASSWORD}"
-          github_repository = "Gitnam123/aks-fullstack-project"
-          github_branch = "main"
-          EOF
+          if az group show \
+            --name "$RESOURCE_GROUP" >/dev/null 2>&1
+          then
+            echo "Resource group already exists."
+          else
+            echo "Creating resource group..."
 
-      - name: Bootstrap State
-        working-directory: bootstrap
+            az group create \
+              --name "$RESOURCE_GROUP" \
+              --location "$AZURE_LOCATION"
+          fi
+
+      - name: Create Terraform State Storage Account
         run: |
           if az storage account show \
             --resource-group "$RESOURCE_GROUP" \
             --name aksfulltfstate2026 >/dev/null 2>&1
           then
-            echo "Terraform state storage already exists."
-            terraform init -reconfigure
+            echo "Terraform state storage account already exists."
           else
-            echo "First-time Terraform bootstrap."
+            echo "Creating Terraform state storage account..."
 
-            terraform init -backend=false
-            terraform fmt -recursive
-            terraform validate
-            terraform apply -auto-approve
-
-            echo "Waiting for Azure RBAC propagation..."
-            sleep 60
-
-            terraform init -migrate-state -force-copy
+            az storage account create \
+              --resource-group "$RESOURCE_GROUP" \
+              --name aksfulltfstate2026 \
+              --location "$AZURE_LOCATION" \
+              --sku Standard_LRS \
+              --min-tls-version TLS1_2 \
+              --allow-blob-public-access false
           fi
 
-      - name: Terraform Deploy
+      - name: Create Terraform State Container
+        run: |
+          if az storage container show \
+            --account-name aksfulltfstate2026 \
+            --name tfstate \
+            --auth-mode login >/dev/null 2>&1
+          then
+            echo "Terraform state container already exists."
+          else
+            echo "Creating Terraform state container..."
+
+            az storage container create \
+              --account-name aksfulltfstate2026 \
+              --name tfstate \
+              --auth-mode login
+          fi
+
+      - name: Terraform Init
         working-directory: terraform
         run: |
-          terraform fmt -recursive -check
           terraform init -reconfigure
-          terraform validate
-          terraform plan -out=tfplan
-          terraform apply -auto-approve tfplan
 
-      - name: Wait for RBAC
-        run: sleep 60
+      - name: Terraform Format Check
+        working-directory: terraform
+        run: |
+          terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: |
+          terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: |
+          terraform plan \
+            -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: |
+          terraform apply \
+            -auto-approve \
+            -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
 
   # =========================
   # STAGE 3 - DOCKER BUILD
@@ -124,29 +147,39 @@ jobs:
   docker-build:
     name: Stage 3 - Docker Build
     runs-on: ubuntu-latest
-    needs: terraform
+    needs: infrastructure
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Build API
-        run: docker build -t aks-product-api:test ./api
+      - name: Build API Image
+        run: |
+          docker build \
+            -t aks-product-api:${IMAGE_TAG} \
+            ./api
 
-      - name: Build UI
-        run: docker build -t aks-product-ui:test ./ui
+      - name: Build UI Image
+        run: |
+          docker build \
+            -t aks-product-ui:${IMAGE_TAG} \
+            ./ui
+
+      - name: Verify Docker Images
+        run: |
+          docker images
 
   # =========================
   # STAGE 4 - PUSH TO ACR
   # =========================
   push-acr:
-    name: Stage 4 - Push Images
+    name: Stage 4 - Push Images to ACR
     runs-on: ubuntu-latest
-    needs:
-      - terraform
-      - docker-build
+    needs: docker-build
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v2
@@ -173,35 +206,45 @@ jobs:
 
       - name: Login to ACR
         run: |
-          az acr login --name "${{ steps.acr.outputs.name }}"
+          az acr login \
+            --name "${{ steps.acr.outputs.name }}"
 
-      - name: Build and Push API
+      - name: Build and Push API Image
         run: |
           docker build \
-            -t "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-api:${GITHUB_SHA::7}" \
+            -t "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-api:${IMAGE_TAG}" \
             ./api
 
           docker push \
-            "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-api:${GITHUB_SHA::7}"
+            "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-api:${IMAGE_TAG}"
 
-      - name: Build and Push UI
+      - name: Build and Push UI Image
         run: |
           docker build \
-            -t "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-ui:${GITHUB_SHA::7}" \
+            -t "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-ui:${IMAGE_TAG}" \
             ./ui
 
           docker push \
-            "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-ui:${GITHUB_SHA::7}"
+            "${{ steps.acr.outputs.name }}.azurecr.io/aks-product-ui:${IMAGE_TAG}"
+
+      - name: Verify ACR Images
+        run: |
+          az acr repository list \
+            --name "${{ steps.acr.outputs.name }}" \
+            --output table
 
   # =========================
   # STAGE 5 - AKS CONNECTION
   # =========================
-  aks:
+  aks-connect:
     name: Stage 5 - AKS Connection
     runs-on: ubuntu-latest
     needs: push-acr
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Azure Login
         uses: azure/login@v2
         with:
@@ -217,18 +260,22 @@ jobs:
             --admin \
             --overwrite-existing
 
+      - name: Verify AKS
+        run: |
+          kubectl cluster-info
           kubectl get nodes
 
   # =========================
-  # STAGE 6 - KUBERNETES
+  # STAGE 6 - KUBERNETES DEPLOYMENT
   # =========================
   deploy:
     name: Stage 6 - Kubernetes Deployment
     runs-on: ubuntu-latest
-    needs: aks
+    needs: aks-connect
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v2
@@ -289,52 +336,54 @@ jobs:
           echo "PostgreSQL host: $PG_HOST"
           echo "host=$PG_HOST" >> "$GITHUB_OUTPUT"
 
-      - name: Create Namespace
-        run: kubectl apply -f k8s/namespace.yaml
-
-      - name: Create ConfigMap
-        run: kubectl apply -f k8s/configmap.yaml
-
-      - name: Create DB Secret
+      - name: Create Generated Kubernetes Manifests
         env:
-          DB_USER: ${{ secrets.POSTGRES_ADMIN_USERNAME }}
-          DB_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
-          DB_HOST: ${{ steps.postgres.outputs.host }}
-        run: |
-          kubectl create secret generic postgres-secret \
-            -n product-app \
-            --from-literal=DB_HOST="$DB_HOST" \
-            --from-literal=DB_USER="$DB_USER" \
-            --from-literal=DB_PASSWORD="$DB_PASSWORD" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Prepare Images
+          ACR_SERVER: ${{ steps.acr.outputs.server }}
+          POSTGRES_HOST: ${{ steps.postgres.outputs.host }}
+          POSTGRES_USERNAME: ${{ secrets.POSTGRES_ADMIN_USERNAME }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
         run: |
           mkdir -p k8s-generated
 
-          sed \
-            "s|ACR_LOGIN_SERVER/aks-product-api:IMAGE_TAG|${{ steps.acr.outputs.server }}/aks-product-api:${GITHUB_SHA::7}|g" \
-            k8s/api-deployment.yaml \
-            > k8s-generated/api-deployment.yaml
-
-          sed \
-            "s|ACR_LOGIN_SERVER/aks-product-ui:IMAGE_TAG|${{ steps.acr.outputs.server }}/aks-product-ui:${GITHUB_SHA::7}|g" \
-            k8s/ui-deployment.yaml \
-            > k8s-generated/ui-deployment.yaml
-
+          cp k8s/namespace.yaml k8s-generated/
+          cp k8s/configmap.yaml k8s-generated/
           cp k8s/api-service.yaml k8s-generated/
           cp k8s/ui-service.yaml k8s-generated/
           cp k8s/ingress.yaml k8s-generated/
+
+          sed \
+            -e "s|ACR_LOGIN_SERVER/aks-product-api:IMAGE_TAG|${ACR_SERVER}/aks-product-api:${IMAGE_TAG}|g" \
+            -e "s|POSTGRES_HOST_PLACEHOLDER|${POSTGRES_HOST}|g" \
+            k8s/api-deployment.yaml > k8s-generated/api-deployment.yaml
+
+          sed \
+            "s|ACR_LOGIN_SERVER/aks-product-ui:IMAGE_TAG|${ACR_SERVER}/aks-product-ui:${IMAGE_TAG}|g" \
+            k8s/ui-deployment.yaml > k8s-generated/ui-deployment.yaml
+
+          cat > k8s-generated/secret.yaml <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: postgres-secret
+            namespace: product-app
+          type: Opaque
+          stringData:
+            DB_USER: "${POSTGRES_USERNAME}"
+            DB_PASSWORD: "${POSTGRES_PASSWORD}"
+            DB_HOST: "${POSTGRES_HOST}"
+          EOF
 
       - name: Deploy
         run: |
           kubectl apply -f k8s-generated/
 
           kubectl rollout status deployment/api-deployment \
-            -n product-app --timeout=180s
+            -n product-app \
+            --timeout=180s
 
           kubectl rollout status deployment/ui-deployment \
-            -n product-app --timeout=180s
+            -n product-app \
+            --timeout=180s
 
           kubectl get all -n product-app
           kubectl get ingress -n product-app -o wide
