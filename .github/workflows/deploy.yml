@@ -25,9 +25,9 @@ env:
 
 jobs:
 
-  # =========================
+  # =========================================================
   # STAGE 1 - AZURE AUTHENTICATION
-  # =========================
+  # =========================================================
   authenticate:
     name: Stage 1 - Azure Authentication
     runs-on: ubuntu-latest
@@ -48,9 +48,9 @@ jobs:
           az account show
           az account list --output table
 
-  # =========================
+  # =========================================================
   # STAGE 2 - TERRAFORM INFRASTRUCTURE
-  # =========================
+  # =========================================================
   infrastructure:
     name: Stage 2 - Terraform Infrastructure
     runs-on: ubuntu-latest
@@ -67,6 +67,9 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # -----------------------------------------------------
+      # Create Resource Group for Terraform State
+      # -----------------------------------------------------
       - name: Create Terraform State Resource Group
         run: |
           if az group show \
@@ -81,6 +84,9 @@ jobs:
               --location "$AZURE_LOCATION"
           fi
 
+      # -----------------------------------------------------
+      # Create Storage Account for Terraform State
+      # -----------------------------------------------------
       - name: Create Terraform State Storage Account
         run: |
           if az storage account show \
@@ -100,6 +106,9 @@ jobs:
               --allow-blob-public-access false
           fi
 
+      # -----------------------------------------------------
+      # Give GitHub Service Principal access to State Storage
+      # -----------------------------------------------------
       - name: Grant Terraform State Storage Access
         run: |
           PRINCIPAL_ID=$(az ad sp show \
@@ -135,6 +144,9 @@ jobs:
             sleep 30
           fi
 
+      # -----------------------------------------------------
+      # Create Terraform State Container
+      # -----------------------------------------------------
       - name: Create Terraform State Container
         run: |
           if az storage container show \
@@ -152,27 +164,54 @@ jobs:
               --auth-mode login
           fi
 
+      # -----------------------------------------------------
+      # Install Terraform
+      # -----------------------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.3
+
+      - name: Terraform Version
+        run: |
+          terraform version
+
+      # -----------------------------------------------------
+      # Terraform Initialization
+      # -----------------------------------------------------
       - name: Terraform Init
         working-directory: terraform
         run: |
           terraform init -reconfigure
 
+      # -----------------------------------------------------
+      # Terraform Format
+      # -----------------------------------------------------
       - name: Terraform Format Check
         working-directory: terraform
         run: |
           terraform fmt -check -recursive
 
+      # -----------------------------------------------------
+      # Terraform Validate
+      # -----------------------------------------------------
       - name: Terraform Validate
         working-directory: terraform
         run: |
           terraform validate
 
+      # -----------------------------------------------------
+      # Terraform Plan
+      # -----------------------------------------------------
       - name: Terraform Plan
         working-directory: terraform
         run: |
           terraform plan \
             -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
 
+      # -----------------------------------------------------
+      # Terraform Apply
+      # -----------------------------------------------------
       - name: Terraform Apply
         working-directory: terraform
         run: |
@@ -180,9 +219,9 @@ jobs:
             -auto-approve \
             -var="postgres_admin_password=${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
 
-  # =========================
+  # =========================================================
   # STAGE 3 - DOCKER BUILD
-  # =========================
+  # =========================================================
   docker-build:
     name: Stage 3 - Docker Build
     runs-on: ubuntu-latest
@@ -208,9 +247,9 @@ jobs:
         run: |
           docker images
 
-  # =========================
+  # =========================================================
   # STAGE 4 - PUSH TO ACR
-  # =========================
+  # =========================================================
   push-acr:
     name: Stage 4 - Push Images to ACR
     runs-on: ubuntu-latest
@@ -272,9 +311,9 @@ jobs:
             --name "${{ steps.acr.outputs.name }}" \
             --output table
 
-  # =========================
+  # =========================================================
   # STAGE 5 - AKS CONNECTION
-  # =========================
+  # =========================================================
   aks-connect:
     name: Stage 5 - AKS Connection
     runs-on: ubuntu-latest
@@ -304,9 +343,9 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
 
-  # =========================
+  # =========================================================
   # STAGE 6 - KUBERNETES DEPLOYMENT
-  # =========================
+  # =========================================================
   deploy:
     name: Stage 6 - Kubernetes Deployment
     runs-on: ubuntu-latest
@@ -429,9 +468,9 @@ jobs:
           kubectl get all -n product-app
           kubectl get ingress -n product-app -o wide
 
-  # =========================
+  # =========================================================
   # STAGE 7 - VERIFY
-  # =========================
+  # =========================================================
   verify:
     name: Stage 7 - Verification
     runs-on: ubuntu-latest
