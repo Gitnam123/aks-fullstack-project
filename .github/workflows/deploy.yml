@@ -350,17 +350,44 @@ jobs:
 
       - name: Deploy
         run: |
-          kubectl apply -f k8s-generated/
+          # 1. Create the namespace first
+          kubectl apply -f k8s-generated/namespace.yaml
 
+          # 2. Wait until the namespace is Active
+          kubectl wait \
+            --for=jsonpath='{.status.phase}'=Active \
+            namespace/product-app \
+            --timeout=60s
+
+          # 3. Create ConfigMap and Secret
+          kubectl apply -f k8s-generated/configmap.yaml
+          kubectl apply -f k8s-generated/secret.yaml
+
+          # 4. Deploy API
+          kubectl apply -f k8s-generated/api-deployment.yaml
+          kubectl apply -f k8s-generated/api-service.yaml
+
+          # 5. Deploy UI
+          kubectl apply -f k8s-generated/ui-deployment.yaml
+          kubectl apply -f k8s-generated/ui-service.yaml
+
+          # 6. Create Ingress
+          kubectl apply -f k8s-generated/ingress.yaml
+
+          # 7. Wait for API deployment
           kubectl rollout status deployment/api-deployment \
             -n product-app \
             --timeout=180s
 
+          # 8. Wait for UI deployment
           kubectl rollout status deployment/ui-deployment \
             -n product-app \
             --timeout=180s
 
+          # 9. Display deployed resources
           kubectl get all -n product-app
+
+          # 10. Display Ingress
           kubectl get ingress -n product-app -o wide
 
   verify:
@@ -384,19 +411,46 @@ jobs:
             --admin \
             --overwrite-existing
 
-      - name: Verify Deployment
+      - name: Verify Namespace
+        run: |
+          kubectl get namespace product-app
+
+      - name: Verify API Deployment
         run: |
           kubectl rollout status deployment/api-deployment \
             -n product-app \
             --timeout=180s
 
+      - name: Verify UI Deployment
+        run: |
           kubectl rollout status deployment/ui-deployment \
             -n product-app \
             --timeout=180s
 
+      - name: Verify Pods
+        run: |
+          kubectl get pods -n product-app -o wide
+
+      - name: Verify Services
+        run: |
+          kubectl get svc -n product-app
+
+      - name: Verify Ingress
+        run: |
+          kubectl get ingress -n product-app -o wide
+
       - name: Final Verification
         run: |
+          echo "===== Deployments ====="
           kubectl get deployments -n product-app
+
+          echo "===== Pods ====="
           kubectl get pods -n product-app
+
+          echo "===== Services ====="
           kubectl get svc -n product-app
+
+          echo "===== Ingress ====="
           kubectl get ingress -n product-app -o wide
+
+          echo "===== Deployment Verification Completed ====="
