@@ -84,6 +84,9 @@ jobs:
               --allow-blob-public-access false
           fi
 
+      - name: Wait for Terraform State Storage
+        run: sleep 30
+
       - name: Get GitHub Actions Principal ID
         id: principal
         run: |
