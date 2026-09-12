@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  AZURE_LOCATION: southindia
+  AZURE_LOCATION: centralindia
   RESOURCE_GROUP: aks-fullstack-rg
   TF_STATE_RESOURCE_GROUP: aks-terraform-state-rg
   AKS_NAME: aks-fullstack
