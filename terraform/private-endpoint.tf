@@ -8,6 +8,10 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
   resource_group_name   = azurerm_resource_group.main.name
   private_dns_zone_name = azurerm_private_dns_zone.postgres.name
   virtual_network_id    = azurerm_virtual_network.main.id
+
+  depends_on = [
+    azurerm_private_dns_zone.postgres
+  ]
 }
 
 resource "azurerm_private_endpoint" "postgres" {
@@ -37,4 +41,9 @@ resource "azurerm_private_endpoint" "postgres" {
       azurerm_private_dns_zone.postgres.id
     ]
   }
+
+  depends_on = [
+    azurerm_private_dns_zone.postgres,
+    azurerm_private_dns_zone_virtual_network_link.postgres
+  ]
 }
