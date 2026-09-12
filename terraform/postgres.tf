@@ -12,6 +12,7 @@ resource "azurerm_postgresql_flexible_server" "postgres" {
   version                       = "16"
   administrator_login           = var.postgres_admin_username
   administrator_password        = var.postgres_admin_password
+  zone                          = "2"
   sku_name                      = "B_Standard_B1ms"
   storage_mb                    = 32768
   backup_retention_days         = 7
