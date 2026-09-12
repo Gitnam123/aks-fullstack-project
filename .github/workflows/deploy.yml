@@ -102,7 +102,8 @@ jobs:
           fi
 
       - name: Wait for Terraform State Storage
-        run: sleep 30
+        run: |
+          sleep 30
 
       - name: Get GitHub Actions Principal ID
         id: principal
@@ -154,15 +155,18 @@ jobs:
 
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init -reconfigure
+        run: |
+          terraform init -reconfigure
 
       - name: Terraform Format Check
         working-directory: terraform
-        run: terraform fmt -check -recursive
+        run: |
+          terraform fmt -check -recursive
 
       - name: Terraform Validate
         working-directory: terraform
-        run: terraform validate
+        run: |
+          terraform validate
 
       - name: Terraform Plan
         working-directory: terraform
@@ -424,34 +428,42 @@ jobs:
             --timeout=60s
 
           # Create ConfigMap and Secret
-          kubectl apply -f k8s-generated/configmap.yaml
-          kubectl apply -f k8s-generated/secret.yaml
+          kubectl apply -n product-app -f k8s-generated/configmap.yaml
+          kubectl apply -n product-app -f k8s-generated/secret.yaml
 
           # Deploy API
-          kubectl apply -f k8s-generated/api-deployment.yaml
-          kubectl apply -f k8s-generated/api-service.yaml
+          kubectl apply -n product-app -f k8s-generated/api-deployment.yaml
+          kubectl apply -n product-app -f k8s-generated/api-service.yaml
 
           # Deploy UI
-          kubectl apply -f k8s-generated/ui-deployment.yaml
-          kubectl apply -f k8s-generated/ui-service.yaml
+          kubectl apply -n product-app -f k8s-generated/ui-deployment.yaml
+          kubectl apply -n product-app -f k8s-generated/ui-service.yaml
 
           # Deploy Ingress
-          kubectl apply -f k8s-generated/ingress.yaml
+          kubectl apply -n product-app -f k8s-generated/ingress.yaml
 
-          # Wait for API
-          kubectl rollout status deployment/api-deployment \
+          # Verify deployments exist
+          echo "===== Deployments ====="
+          kubectl get deployments -n product-app
+
+          # API rollout
+          echo "===== API Rollout ====="
+          kubectl rollout status deployment/api \
             -n product-app \
             --timeout=180s
 
-          # Wait for UI
-          kubectl rollout status deployment/ui-deployment \
+          # UI rollout
+          echo "===== UI Rollout ====="
+          kubectl rollout status deployment/ui \
             -n product-app \
             --timeout=180s
 
           # Show resources
+          echo "===== All Resources ====="
           kubectl get all -n product-app
 
           # Show ingress
+          echo "===== Ingress ====="
           kubectl get ingress -n product-app -o wide
 
 
@@ -489,13 +501,13 @@ jobs:
 
       - name: Verify API Deployment
         run: |
-          kubectl rollout status deployment/api-deployment \
+          kubectl rollout status deployment/api \
             -n product-app \
             --timeout=180s
 
       - name: Verify UI Deployment
         run: |
-          kubectl rollout status deployment/ui-deployment \
+          kubectl rollout status deployment/ui \
             -n product-app \
             --timeout=180s
 
