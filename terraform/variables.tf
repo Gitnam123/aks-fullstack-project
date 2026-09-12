@@ -1,7 +1,7 @@
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "southindia"
+  default     = "centralindia"
 }
 
 variable "resource_group_name" {
